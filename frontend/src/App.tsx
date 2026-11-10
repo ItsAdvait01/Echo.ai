@@ -40,6 +40,15 @@ function shortValue(value: unknown): string {
   return String(value);
 }
 
+function expectedText(value: unknown): string {
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const parts = [record.type, record.value].filter((part) => part !== undefined && part !== null && part !== "").map(String);
+    if (parts.length) return parts.join(" · ");
+  }
+  return shortValue(value);
+}
+
 export default function App() {
   const [tab, setTab] = useState<Tab>("home");
   const [state, setState] = useState<State>("idle");
@@ -161,6 +170,15 @@ export default function App() {
     setRun(response.data); setState(action === "stop" ? "stopped" : response.data.run.state as State); setMessage(response.data.message);
   };
 
+  const confirmExecution = async () => {
+    if (!run?.run.id) { setState("idle"); setMessage("There is no execution awaiting confirmation."); return; }
+    setBusy(true); setState("processing");
+    const response = await request<Execution>(`/api/executions/${run.run.id}/confirm`, "POST");
+    setBusy(false);
+    if (!response.ok) { setState(response.unavailable ? "service-unavailable" : "failed"); setMessage(response.message); setApiNotice(response.message); return; }
+    setRun(response.data); setState(response.data.run.state as State); setMessage(response.data.message || "Confirmation received.");
+  };
+
   const beginListening = () => {
     const speech = window as SpeechWindow; const RecognitionCtor = speech.SpeechRecognition || speech.webkitSpeechRecognition;
     if (!RecognitionCtor) { setVoiceSupported(false); setMessage("Voice recognition is unavailable in this browser. Type a command below."); return; }
@@ -173,6 +191,7 @@ export default function App() {
   const statusKey = state in titles ? state : "idle";
   const activeStep = run?.current_step;
   const verified = run?.run.last_verified_step ?? 0;
+  const awaitingConfirmation = run?.run.state === "waiting_for_confirmation";
   const onSubmitCommand = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); void handleCommand(command, "text"); };
 
   return <div className="app-shell">
@@ -199,7 +218,7 @@ export default function App() {
 
       {tab === "library" && <section className="screen"><div className="page-intro"><span className="eyebrow">APPROVED MEMORY</span><h2>Workflow library</h2><p>Only workflows returned by the API appear here. Progress is shown only when reported by an execution.</p></div><WorkflowCards workflows={workflows} onRun={(workflow) => void startExecution(workflow, true)} onReview={() => setTab("execution")} detailed /></section>}
 
-      {tab === "execution" && <section className="screen"><div className="page-intro"><span className="eyebrow">EXECUTION MONITOR</span><h2>Action and verification status</h2><p>Attempted actions and verified checkpoints are tracked separately. A checkpoint advances only when the API confirms it.</p></div>{run && selectedWorkflow ? <article className="panel monitor-panel"><div className="monitor-head"><div><span className="eyebrow">{selectedWorkflow.name}</span><h3>Run {run.run.id}</h3><p>{run.message}</p></div><div className="monitor-actions"><button className="secondary" disabled={busy || !["executing", "waiting_for_confirmation"].includes(run.run.state)} onClick={() => void controlExecution("pause")}>Pause</button><button className="danger-outline" disabled={busy || ["completed", "failed"].includes(run.run.state)} onClick={() => void controlExecution("stop")}>Stop</button></div></div><div className="progress-summary"><div><small>LAST VERIFIED STEP</small><b>{verified} <i>/ {selectedWorkflow.steps.length || "?"}</i></b></div><div><small>RUN STATE</small><b>{titles[(run.run.state in titles ? run.run.state : "idle") as State]}</b></div><div><small>CURRENT ATTEMPT</small><b>{activeStep ? `Step ${activeStep.order}` : "Not reported"}</b></div></div><div className="timeline">{selectedWorkflow.steps?.map((step) => { const isVerified = step.order <= verified; const isFailed = run.verification?.step_id === step.id && !run.verification.passed; const isAttempted = activeStep?.id === step.id && !isVerified && !isFailed; return <div className={`timeline-step ${isVerified ? "verified" : isFailed ? "failed" : isAttempted ? "attempted" : "pending"}`} key={step.id}><span className="timeline-marker">{isVerified ? "✓" : isFailed ? "!" : isAttempted ? "…" : step.order}</span><div className="timeline-copy"><div><b>{step.action_type}</b><span className="status-tag">{isVerified ? "Verified" : isFailed ? "Failed verification" : isAttempted ? "Attempted · unverified" : "Not attempted"}</span></div><p>Expected: {shortValue(step.expected_result)}</p>{isVerified && <small>Checkpoint reported by API</small>}{isAttempted && <small>Action returned; verification not confirmed. Progress did not advance.</small>}{isFailed && <small>{run.verification?.message || "Expected result was not confirmed."}</small>}</div></div>; })}</div>{!selectedWorkflow.steps?.length && <Empty title="Step details unavailable" text="The workflow response did not include its ordered steps." />}</article> : <Empty title="No execution selected" text="Choose an approved workflow to start monitoring its attempted actions and verified checkpoints." action="Open workflow library" onClick={() => setTab("library")} />}</section>}
+      {tab === "execution" && <section className="screen"><div className="page-intro"><span className="eyebrow">EXECUTION MONITOR</span><h2>Action and verification status</h2><p>Attempted actions and verified checkpoints are tracked separately. A checkpoint advances only when the API confirms it.</p></div>{run && selectedWorkflow ? <article className="panel monitor-panel"><div className="monitor-head"><div><span className="eyebrow">{selectedWorkflow.name}</span><h3>Run {run.run.id}</h3><p>{run.message}</p></div><div className="monitor-actions">{awaitingConfirmation && <button className="primary" disabled={busy} onClick={() => void confirmExecution()}>{busy ? "Confirming…" : `Confirm & run${activeStep ? ` step ${activeStep.order}` : ""}`}</button>}<button className="secondary" disabled={busy || !["executing", "waiting_for_confirmation"].includes(run.run.state)} onClick={() => void controlExecution("pause")}>Pause</button><button className="danger-outline" disabled={busy || ["completed", "failed"].includes(run.run.state)} onClick={() => void controlExecution("stop")}>Stop</button></div></div><div className="progress-summary"><div><small>LAST VERIFIED STEP</small><b>{verified} <i>/ {selectedWorkflow.steps.length || "?"}</i></b></div><div><small>RUN STATE</small><b>{titles[(run.run.state in titles ? run.run.state : "idle") as State]}</b></div><div><small>CURRENT ATTEMPT</small><b>{activeStep ? `Step ${activeStep.order}${awaitingConfirmation ? " · awaiting confirmation" : ""}` : "Not reported"}</b></div></div><div className="timeline">{selectedWorkflow.steps?.map((step) => { const isVerified = step.order <= verified; const isFailed = run.verification?.step_id === step.id && !run.verification.passed; const isPending = awaitingConfirmation && activeStep?.id === step.id; const isAttempted = activeStep?.id === step.id && !isVerified && !isFailed && !isPending; return <div className={`timeline-step ${isVerified ? "verified" : isFailed ? "failed" : isPending || isAttempted ? "attempted" : "pending"}`} key={step.id}><span className="timeline-marker">{isVerified ? "✓" : isFailed ? "!" : isPending ? "?" : isAttempted ? "…" : step.order}</span><div className="timeline-copy"><div><b>{step.action_type}</b><span className="status-tag">{isVerified ? "Verified" : isFailed ? "Failed verification" : isPending ? "Awaiting confirmation" : isAttempted ? "Attempted · unverified" : "Not attempted"}</span></div><p>Expected: {expectedText(step.expected_result)}</p>{isVerified && <small>Checkpoint reported by API</small>}{isPending && <small>High risk: this step runs only after you confirm it.</small>}{isAttempted && <small>Action returned; verification not confirmed. Progress did not advance.</small>}{isFailed && <small>{run.verification?.message || "Expected result was not confirmed."}</small>}</div></div>; })}</div>{!selectedWorkflow.steps?.length && <Empty title="Step details unavailable" text="The workflow response did not include its ordered steps." />}</article> : <Empty title="No execution selected" text="Choose an approved workflow to start monitoring its attempted actions and verified checkpoints." action="Open workflow library" onClick={() => setTab("library")} />}</section>}
       <footer className="footer"><span>Echo.ai</span><span>Voice first · User approved · Progress verified</span><span>API status: {online === null ? "checking" : online ? "connected" : "offline"}</span></footer>
     </main>
   </div>;

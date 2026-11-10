@@ -140,6 +140,59 @@ def _finish_if_complete(
         run.ended_at = datetime.now(UTC)
 
 
+def _advance(
+    run: ExecutionRun,
+    workflow: Workflow,
+    planner: WorkflowPlanner,
+    executor: BrowserExecutor,
+    verifier: CheckpointVerifier,
+    recovery: RecoveryPolicy,
+) -> tuple[WorkflowStep | None, VerificationResult | None, str]:
+    """Carry the run forward until it completes, fails, or needs confirmation.
+
+    A run that only performed the current step would stall in ``executing``
+    until someone pressed resume again, so every verified step is followed by
+    the next one. A HIGH-risk step is never performed here: it is staged as the
+    pending step and the run stops in ``waiting_for_confirmation``.
+    """
+    _pending_steps.pop(run.id, None)
+    current_step: WorkflowStep | None = None
+    verification: VerificationResult | None = None
+    attempted: set[int] = set()
+
+    while True:
+        step = planner.next_step(workflow, run.last_verified_step)
+        if step is None:
+            run.state = AgentState.COMPLETED
+            run.ended_at = datetime.now(UTC)
+            return current_step, verification, "Workflow complete; every step verified."
+        if step.order in attempted:
+            # The planner returned a step this loop already handled.
+            run.state = AgentState.FAILED
+            run.ended_at = datetime.now(UTC)
+            return current_step, verification, (
+                f"Execution stopped: step {step.order} repeated without advancing."
+            )
+
+        current_step = step
+        if step.risk == RiskLevel.HIGH:
+            _pending_steps[run.id] = step
+            run.state = AgentState.WAITING_FOR_CONFIRMATION
+            return current_step, verification, (
+                f"Step {step.order} is marked high risk; "
+                "explicit confirmation is required before it runs."
+            )
+
+        attempted.add(step.order)
+        verification, state, message = _attempt_step(
+            run, step, executor, verifier, recovery
+        )
+        run.state = state
+        if state != AgentState.EXECUTING:
+            return current_step, verification, message
+        run.last_verified_step = step.order
+
+
 @router.post("", response_model=ExecutionResponse)
 def start_execution(
     body: ExecutionStartRequest,
@@ -173,31 +226,9 @@ def start_execution(
     verification: VerificationResult | None = None
 
     try:
-        step = planner.next_step(workflow, resume_step)
-        if step is None:
-            run.state = AgentState.COMPLETED
-            run.ended_at = datetime.now(UTC)
-            message = "All steps already verified — workflow complete."
-        elif step.risk == RiskLevel.HIGH:
-            # Consequential or uncertain step: explicit confirmation first.
-            current_step = step
-            _pending_steps[run_id] = step
-            run.state = AgentState.WAITING_FOR_CONFIRMATION
-            message = (
-                f"Step {step.order} is marked high risk; "
-                "explicit confirmation is required before it runs."
-            )
-        else:
-            current_step = step
-            verification, state, message = _attempt_step(
-                run, step, executor, verifier, recovery
-            )
-            run.state = state
-            if state == AgentState.EXECUTING:
-                run.last_verified_step = step.order
-                _finish_if_complete(run, workflow, planner)
-                if run.state == AgentState.COMPLETED:
-                    message = "Workflow complete; every step verified."
+        current_step, verification, message = _advance(
+            run, workflow, planner, executor, verifier, recovery
+        )
     except NotImplementedError:
         # Agent modules are stubs — run is registered but not actively executing
         run.state = AgentState.PAUSED
@@ -243,19 +274,27 @@ def confirm_execution_step(
         raise NotFoundError("Workflow", run.workflow_id)
 
     run.state = AgentState.EXECUTING
+    current_step: WorkflowStep | None = step
     verification, state, message = _attempt_step(run, step, executor, verifier, recovery)
     run.state = state
     if state == AgentState.EXECUTING:
         run.last_verified_step = step.order
-        _finish_if_complete(run, workflow, planner)
-        if run.state == AgentState.COMPLETED:
-            message = "Workflow complete; every step verified."
+        # Keep going: the next step may run, or wait for its own confirmation.
+        follow_step, follow_verification, follow_message = _advance(
+            run, workflow, planner, executor, verifier, recovery
+        )
+        if follow_step is not None:
+            current_step = follow_step
+        if follow_verification is not None:
+            verification = follow_verification
+        if follow_step is not None or run.state == AgentState.COMPLETED:
+            message = follow_message
 
     _runs[run_id] = run
     return ExecutionResponse(
         run=run,
         message=message,
-        current_step=step,
+        current_step=current_step,
         verification=verification,
     )
 
@@ -266,7 +305,14 @@ def get_execution_status(run_id: str) -> ExecutionResponse:
     run = _runs.get(run_id)
     if run is None:
         raise NotFoundError("Execution run", run_id)
-    return ExecutionResponse(run=run, message=f"Run is {run.state.value}.")
+    pending = _pending_steps.get(run_id)
+    if pending is not None:
+        message = (
+            f"Run is {run.state.value}: step {pending.order} awaits confirmation."
+        )
+    else:
+        message = f"Run is {run.state.value}."
+    return ExecutionResponse(run=run, message=message, current_step=pending)
 
 
 @router.post("/{run_id}/pause", response_model=ExecutionResponse)

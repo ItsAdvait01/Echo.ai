@@ -56,7 +56,9 @@ class StubVerifier:
         }
 
 
-def _workflow(*, risk: RiskLevel = RiskLevel.LOW, steps: int = 1) -> str:
+def _workflow(
+    *, risk: RiskLevel = RiskLevel.LOW, steps: int = 1, last_risk: RiskLevel | None = None
+) -> str:
     """Stage and approve a workflow, returning its id."""
     built = [
         WorkflowStep(
@@ -65,7 +67,7 @@ def _workflow(*, risk: RiskLevel = RiskLevel.LOW, steps: int = 1) -> str:
             action_type="click_semantic_target",
             target={"test_id": f"next-lesson-{index}", "name": "Next lesson"},
             expected_result={"type": "navigation", "value": "lesson2", "match_mode": "contains"},
-            risk=risk,
+            risk=last_risk if (last_risk is not None and index == steps) else risk,
         )
         for index in range(1, steps + 1)
     ]
@@ -150,11 +152,34 @@ def test_failed_or_ambiguous_action_does_not_advance(doubles: Doubles, status: s
     assert body["run"]["state"] in (AgentState.PAUSED, AgentState.FAILED)
 
 
+def test_run_advances_until_a_high_risk_step_needs_confirmation(doubles: Doubles) -> None:
+    workflow_id = _workflow(steps=2, last_risk=RiskLevel.HIGH)
+    body = client.post("/api/executions", json={"workflow_id": workflow_id}).json()
+
+    # Step 1 ran without a second resume click; step 2 was staged, not performed.
+    assert len(doubles.executor.calls) == 1
+    assert body["run"]["last_verified_step"] == 1
+    assert body["run"]["state"] == AgentState.WAITING_FOR_CONFIRMATION
+    assert body["current_step"]["order"] == 2
+
+    # The status endpoint reports the same staged step the UI must confirm.
+    status = client.get(f"/api/executions/{body['run']['id']}").json()
+    assert status["current_step"]["order"] == 2
+    assert "awaits confirmation" in status["message"]
+
+    confirmed = client.post(f"/api/executions/{body['run']['id']}/confirm").json()
+    assert len(doubles.executor.calls) == 2
+    assert confirmed["run"]["last_verified_step"] == 2
+    assert confirmed["run"]["state"] == AgentState.COMPLETED
+
+
 def test_verified_checkpoints_survive_a_later_failed_run(doubles: Doubles) -> None:
     workflow_id = _workflow(steps=2)
 
     first = client.post("/api/executions", json={"workflow_id": workflow_id}).json()
-    assert first["run"]["last_verified_step"] == 1
+    # A low-risk workflow runs straight through in a single pass.
+    assert first["run"]["last_verified_step"] == 2
+    assert first["run"]["state"] == AgentState.COMPLETED
 
     doubles.install(verifier=StubVerifier(status="failed", confidence="low"))
     second = client.post(

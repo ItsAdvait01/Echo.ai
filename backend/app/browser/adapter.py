@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 PAGE_ACTION_TIMEOUT_MS = 15_000
 NAVIGATION_SETTLE_MS = 5_000
+# How long each candidate locator is given to appear before the next is tried.
+LOCATOR_PROBE_MS = 1_500
 MAX_TEXT_CHARS = 2_000
 MAX_VISIBLE_ELEMENTS = 25
 ACTION_TIMEOUT_S = 45.0
@@ -57,6 +59,33 @@ _VISIBLE_ELEMENTS_JS = """
   return out;
 }
 """
+
+
+# HTML tag names and loose role words that U1 records, mapped onto the ARIA
+# roles Playwright can actually address.
+_ARIA_ROLE_ALIASES: dict[str, tuple[str, ...]] = {
+    "input": ("textbox", "searchbox", "combobox"),
+    "textarea": ("textbox",),
+    "textbox": ("textbox",),
+    "search": ("searchbox", "textbox"),
+    "searchbox": ("searchbox", "textbox"),
+    "a": ("link",),
+    "link": ("link",),
+    "select": ("combobox",),
+    "img": ("img",),
+    "heading": ("heading",),
+    "listitem": ("listitem",),
+}
+
+
+def _aria_roles(role: str) -> tuple[str, ...]:
+    """Expand a recorded role into the ARIA roles worth trying."""
+    key = role.strip().lower()
+    if not key:
+        return ()
+    if key in _ARIA_ROLE_ALIASES:
+        return _ARIA_ROLE_ALIASES[key]
+    return (key,)
 
 
 class ExecutionBrowserAdapter:
@@ -134,9 +163,28 @@ class ExecutionBrowserAdapter:
     # -- internals -------------------------------------------------------
 
     def _ensure_session(self, target: Mapping[str, Any]) -> BrowserObserver:
+        start_url = str(target.get("url") or target.get("page_url") or "").strip()
         with self._lock:
             observer = self._observer
             if observer is not None and observer.is_active:
+                # The session is reused across runs, but it must be on the page
+                # this step expects; otherwise the step runs against the page a
+                # previous workflow left behind.
+                current = str(observer.status().current_url or "").rstrip("/")
+                if start_url and start_url.rstrip("/") != current:
+                    logger.info("execution session navigating to %s", start_url)
+                    try:
+                        observer.run_in_page(
+                            lambda page: self._apply(
+                                page, "navigate_to_known_page", {"url": start_url}
+                            ),
+                            timeout=ACTION_TIMEOUT_S,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "execution session could not reach the step start page",
+                            exc_info=True,
+                        )
                 return observer
             if observer is not None:
                 self._observer = None
@@ -159,6 +207,9 @@ class ExecutionBrowserAdapter:
             await self._settle(page)
 
         elif action_type in CLICK_ACTIONS:
+            # Single-page apps render their controls after the document loads,
+            # so give the page a bounded chance to settle before locating.
+            await self._settle(page)
             locator = await self._locator(page, target)
             await locator.first.click(timeout=PAGE_ACTION_TIMEOUT_MS)
             await self._settle(page)
@@ -178,7 +229,14 @@ class ExecutionBrowserAdapter:
             logger.debug("page did not settle after action", exc_info=True)
 
     async def _locator(self, page: Any, target: Mapping[str, Any]) -> Any:
-        """Resolve a semantic target to a Playwright locator."""
+        """Resolve a semantic target to a Playwright locator.
+
+        Recorded targets sometimes carry an HTML tag name (``input``) where
+        Playwright expects an ARIA role, which can never match and only fails
+        after the click times out. Every recorded role is therefore expanded
+        into its real ARIA roles, and candidates are probed in order so an
+        unlocatable first guess does not stall the action.
+        """
         role = str(target.get("role") or "").strip()
         name = str(target.get("name") or "").strip()
         test_id = str(target.get("test_id") or "").strip()
@@ -186,23 +244,34 @@ class ExecutionBrowserAdapter:
         placeholder = str(target.get("placeholder") or "").strip()
         selector = str(target.get("selector") or "").strip()
 
+        candidates: list[Any] = []
         if test_id:
-            return page.get_by_test_id(test_id)
-        if role and name:
-            return page.get_by_role(role, name=name)
+            candidates.append(page.get_by_test_id(test_id))
+        if name:
+            candidates.extend(page.get_by_role(alias, name=name) for alias in _aria_roles(role))
         if label:
-            return page.get_by_label(label)
+            candidates.append(page.get_by_label(label))
         if placeholder:
-            return page.get_by_placeholder(placeholder)
+            candidates.append(page.get_by_placeholder(placeholder))
         if selector:
-            return page.locator(selector)
+            candidates.append(page.locator(selector))
         if name:
             # Ambiguous by construction; U3 refuses such targets before this
             # point, so reaching here means the draft lacked a semantic target.
-            return page.get_by_role("button", name=name)
-        if role:
-            return page.get_by_role(role)
-        raise ValueError("target has no semantic locator")
+            candidates.append(page.get_by_role("button", name=name))
+        candidates.extend(page.get_by_role(alias) for alias in _aria_roles(role))
+        if not candidates:
+            raise ValueError("target has no semantic locator")
+
+        for candidate in candidates:
+            try:
+                await candidate.first.wait_for(state="attached", timeout=LOCATOR_PROBE_MS)
+                return candidate
+            except Exception:  # an invalid or absent candidate is just skipped
+                logger.debug("locator candidate not present", exc_info=True)
+        # Nothing matched yet: hand back the best guess so Playwright's own
+        # timeout reports which locator actually failed.
+        return candidates[0]
 
     async def _observe(self, page: Any, action_type: str) -> dict[str, Any]:
         """Collect the page state U4 needs to verify the step."""
