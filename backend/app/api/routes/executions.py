@@ -8,7 +8,7 @@ to U3 (planner + executor) and U4 (verifier + recovery).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
 
@@ -66,7 +66,7 @@ def start_execution(
         workflow_id=body.workflow_id,
         state=AgentState.EXECUTING,
         last_verified_step=resume_step,
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
     )
     _runs[run_id] = run
 
@@ -79,7 +79,7 @@ def start_execution(
         step = planner.next_step(workflow, resume_step)
         if step is None:
             run.state = AgentState.COMPLETED
-            run.ended_at = datetime.now(timezone.utc)
+            run.ended_at = datetime.now(UTC)
             message = "All steps already verified — workflow complete."
         else:
             current_step = step
@@ -100,13 +100,14 @@ def start_execution(
                 message = f"Step {step.order} executed and verified."
             else:
                 # Verification failed — do not advance checkpoint
-                if recovery.should_retry(attempt=1, confidence=verification.confidence,
-                                         ambiguous_target=False):
+                if recovery.should_retry(
+                    attempt=1, confidence=verification.confidence, ambiguous_target=False
+                ):
                     run.state = AgentState.PAUSED
                     message = f"Step {step.order} verification failed; paused for retry."
                 else:
                     run.state = AgentState.FAILED
-                    run.ended_at = datetime.now(timezone.utc)
+                    run.ended_at = datetime.now(UTC)
                     message = f"Step {step.order} verification failed; execution stopped."
     except NotImplementedError:
         # Agent modules are stubs — run is registered but not actively executing
@@ -114,7 +115,7 @@ def start_execution(
         message = "Execution registered. Agent modules not yet implemented (stub)."
     except ValueError as exc:
         run.state = AgentState.FAILED
-        run.ended_at = datetime.now(timezone.utc)
+        run.ended_at = datetime.now(UTC)
         message = f"Execution failed: {exc}"
 
     _runs[run_id] = run
@@ -147,9 +148,7 @@ def pause_execution(run_id: str) -> ExecutionResponse:
         AgentState.WAITING_FOR_CONFIRMATION,
         AgentState.PAUSED,  # allow re-confirming pause (idempotent)
     ):
-        raise InvalidStateError(
-            f"Cannot pause a run in state '{run.state.value}'."
-        )
+        raise InvalidStateError(f"Cannot pause a run in state '{run.state.value}'.")
 
     run.state = AgentState.PAUSED
     _runs[run_id] = run
@@ -165,11 +164,9 @@ def stop_execution(run_id: str) -> ExecutionResponse:
 
     terminal = (AgentState.COMPLETED, AgentState.FAILED)
     if run.state in terminal:
-        raise InvalidStateError(
-            f"Run is already in terminal state '{run.state.value}'."
-        )
+        raise InvalidStateError(f"Run is already in terminal state '{run.state.value}'.")
 
     run.state = AgentState.COMPLETED
-    run.ended_at = datetime.now(timezone.utc)
+    run.ended_at = datetime.now(UTC)
     _runs[run_id] = run
     return ExecutionResponse(run=run, message="Execution stopped by user.")

@@ -11,10 +11,10 @@ from fastapi.responses import JSONResponse
 
 from app.schemas.contracts import ErrorDetail
 
-
 # ---------------------------------------------------------------------------
 # Custom exception hierarchy
 # ---------------------------------------------------------------------------
+
 
 class EchoError(Exception):
     """Base for all Echo.ai domain errors."""
@@ -73,6 +73,7 @@ class ServiceUnavailableError(EchoError):
 # ---------------------------------------------------------------------------
 # FastAPI exception handlers — registered in main.py
 # ---------------------------------------------------------------------------
+
 
 async def echo_error_handler(_request: Request, exc: EchoError) -> JSONResponse:
     detail = ErrorDetail(code=exc.code, message=exc.message, retryable=exc.retryable)

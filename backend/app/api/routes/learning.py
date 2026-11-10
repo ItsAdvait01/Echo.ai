@@ -7,7 +7,7 @@ Thin routing layer — delegates to U1 (observer) and U2 (learner) modules.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
 
@@ -57,7 +57,7 @@ def start_teach_session(
     _sessions[session_id] = {
         "state": AgentState.LEARNING,
         "target_url": body.target_url,
-        "started_at": datetime.now(timezone.utc),
+        "started_at": datetime.now(UTC),
         "stopped": False,
     }
 
@@ -112,8 +112,11 @@ def stop_teach_session(
     return TeachSessionResponse(
         session_id=session_id,
         state=state,
-        message="Observation stopped." + (
-            " Draft generated for review." if draft else " No draft generated (awaiting agent modules)."
+        message="Observation stopped."
+        + (
+            " Draft generated for review."
+            if draft
+            else " No draft generated (awaiting agent modules)."
         ),
         event_count=len(events),
         events=events,

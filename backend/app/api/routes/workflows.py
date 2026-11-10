@@ -7,7 +7,7 @@ Delegates persistence to A2's WorkflowRepository.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
 
@@ -30,8 +30,13 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 _drafts: dict[str, Workflow] = {}
 
 
-def stage_draft(name: str, description: str, trigger_phrases: list[str],
-                steps: list, uncertainty_notes: list[str]) -> Workflow:
+def stage_draft(
+    name: str,
+    description: str,
+    trigger_phrases: list[str],
+    steps: list,
+    uncertainty_notes: list[str],
+) -> Workflow:
     """Create a Workflow object in draft (unapproved) state.
 
     Called internally by A1 routes (e.g. after U2 generates a draft).
@@ -44,7 +49,7 @@ def stage_draft(name: str, description: str, trigger_phrases: list[str],
         steps=steps,
         uncertainty_notes=uncertainty_notes,
         approved=False,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     _drafts[workflow.id] = workflow
     return workflow

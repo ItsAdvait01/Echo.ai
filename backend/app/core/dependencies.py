@@ -20,8 +20,8 @@ from app.learning.learner import WorkflowLearner
 from app.memory.repository import InMemoryWorkflowRepository, WorkflowRepository
 from app.voice.adapter import TextFallbackAdapter
 
-
 # --- Singletons (one per process) ------------------------------------------
+
 
 @lru_cache(maxsize=1)
 def get_workflow_repository() -> WorkflowRepository:  # type: ignore[type-arg]

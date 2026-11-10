@@ -27,21 +27,45 @@ router = APIRouter(prefix="/voice", tags=["voice"])
 # ---------------------------------------------------------------------------
 _INTENT_PATTERNS: list[tuple[re.Pattern[str], VoiceIntent]] = [
     # Teach start — must match before generic "continue/run" patterns
-    (re.compile(r"\blearn\s+how\b", re.I), VoiceIntent.TEACH_START),
-    (re.compile(r"\bstart\s+teach", re.I), VoiceIntent.TEACH_START),
-    (re.compile(r"\b(teach|observe|watch|show)\b.*\b(start|begin|new)\b", re.I), VoiceIntent.TEACH_START),
-    (re.compile(r"\b(start|begin)\b.*\b(teach|learn|observe|watch)\b", re.I), VoiceIntent.TEACH_START),
+    (re.compile(r"\blearn\s+how\b", re.IGNORECASE), VoiceIntent.TEACH_START),
+    (re.compile(r"\bstart\s+teach", re.IGNORECASE), VoiceIntent.TEACH_START),
+    (
+        re.compile(r"\b(teach|observe|watch|show)\b.*\b(start|begin|new)\b", re.IGNORECASE),
+        VoiceIntent.TEACH_START,
+    ),
+    (
+        re.compile(r"\b(start|begin)\b.*\b(teach|learn|observe|watch)\b", re.IGNORECASE),
+        VoiceIntent.TEACH_START,
+    ),
     # Teach stop — must match before bare "stop"
-    (re.compile(r"\b(teach|learn|observe|watch)\b.*\b(stop|end|finish|done)\b", re.I), VoiceIntent.TEACH_STOP),
-    (re.compile(r"\b(stop|end|finish)\b.*\b(teach|learn|observ)", re.I), VoiceIntent.TEACH_STOP),
+    (
+        re.compile(r"\b(teach|learn|observe|watch)\b.*\b(stop|end|finish|done)\b", re.IGNORECASE),
+        VoiceIntent.TEACH_STOP,
+    ),
+    (
+        re.compile(r"\b(stop|end|finish)\b.*\b(teach|learn|observ)", re.IGNORECASE),
+        VoiceIntent.TEACH_STOP,
+    ),
     # Workflow execute
-    (re.compile(r"\b(run|execute|do|continue|resume|start)\b.*\b(workflow|course|task|python)\b", re.I), VoiceIntent.WORKFLOW_EXECUTE),
-    (re.compile(r"\bcontinue\b.*\b(my|the|python)\b", re.I), VoiceIntent.WORKFLOW_EXECUTE),
+    (
+        re.compile(
+            r"\b(run|execute|do|continue|resume|start)\b.*\b(workflow|course|task|python)\b",
+            re.IGNORECASE,
+        ),
+        VoiceIntent.WORKFLOW_EXECUTE,
+    ),
+    (re.compile(r"\bcontinue\b.*\b(my|the|python)\b", re.IGNORECASE), VoiceIntent.WORKFLOW_EXECUTE),
     # Execution control
-    (re.compile(r"\bpause\b", re.I), VoiceIntent.EXECUTION_PAUSE),
-    (re.compile(r"\bstop\b(?!.*\b(teach|learn|observ))", re.I), VoiceIntent.EXECUTION_STOP),
+    (re.compile(r"\bpause\b", re.IGNORECASE), VoiceIntent.EXECUTION_PAUSE),
+    (
+        re.compile(r"\bstop\b(?!.*\b(teach|learn|observ))", re.IGNORECASE),
+        VoiceIntent.EXECUTION_STOP,
+    ),
     # Status
-    (re.compile(r"\b(status|progress|where am i|how.s it going)\b", re.I), VoiceIntent.STATUS_GET),
+    (
+        re.compile(r"\b(status|progress|where am i|how.s it going)\b", re.IGNORECASE),
+        VoiceIntent.STATUS_GET,
+    ),
 ]
 
 
