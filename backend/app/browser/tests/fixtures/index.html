@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Python Course Dashboard</title>
+</head>
+<body>
+  <h1>Course dashboard</h1>
+
+  <a id="next-link" href="/page2.html?token=supersecret123#lesson-2">Continue to lesson 2</a>
+
+  <a id="new-tab-link" href="/page2.html" target="_blank">Open lesson in a new tab</a>
+
+  <button id="next-lesson" data-testid="next-lesson" type="button">Next lesson</button>
+
+  <label for="search">Search lessons</label>
+  <input id="search" type="search" name="search" placeholder="Search lessons" autocomplete="off">
+
+  <label for="password">Password</label>
+  <input id="password" type="password" name="user_password" autocomplete="current-password">
+
+  <label for="card">Card number</label>
+  <input id="card" type="text" name="card_number" autocomplete="cc-number">
+
+  <label for="level">Level</label>
+  <select id="level" name="level">
+    <option>Beginner</option>
+    <option>Intermediate</option>
+    <option>Advanced</option>
+  </select>
+
+  <form id="continue-form" action="/page2.html" method="get" onsubmit="event.preventDefault(); return false;">
+    <button type="submit" id="submit-continue">Continue</button>
+  </form>
+
+  <div style="height: 3000px" aria-hidden="true">spacer</div>
+  <p id="bottom">Bottom of page</p>
+
+  <script>
+    document.getElementById('next-lesson').addEventListener('click', function () {
+      this.textContent = 'Next lesson (clicked)';
+    });
+  </script>
+</body>
+</html>
