@@ -1,10 +1,12 @@
-"""Health endpoint starter. Owned by A1."""
+"""Health endpoint. Owned by A1."""
 
 from fastapi import APIRouter
+
+from app.schemas.contracts import HealthResponse
 
 router = APIRouter()
 
 
-@router.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "service": "echo-api"}
+@router.get("/health", response_model=HealthResponse)
+def health() -> HealthResponse:
+    return HealthResponse()
