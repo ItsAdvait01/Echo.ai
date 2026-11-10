@@ -11,12 +11,24 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
 
+from app.api.draft_adapter import normalize_draft
+from app.api.routes.workflows import stage_draft
+from app.browser.errors import ConsentRequiredError as BrowserConsentRequiredError
+from app.browser.errors import DuplicateSessionError as BrowserDuplicateSessionError
+from app.browser.errors import ObserverError
 from app.browser.observer import BrowserObserver
 from app.core.dependencies import (
     get_browser_observer,
     get_workflow_learner,
 )
-from app.core.errors import ConsentRequiredError, InvalidStateError, NotFoundError
+from app.core.errors import (
+    ConsentRequiredError,
+    EchoError,
+    InvalidStateError,
+    NotFoundError,
+    ServiceUnavailableError,
+)
+from app.learning.errors import WorkflowDraftError
 from app.learning.learner import WorkflowLearner
 from app.schemas.contracts import (
     AgentState,
@@ -36,6 +48,17 @@ router = APIRouter(prefix="/learning", tags=["learning"])
 _sessions: dict[str, dict] = {}
 
 
+def _observation_unavailable(exc: ObserverError) -> EchoError:
+    """Map a U1 observer error onto the API's stable error contract."""
+    if isinstance(exc, BrowserConsentRequiredError):
+        return ConsentRequiredError()
+    if isinstance(exc, BrowserDuplicateSessionError):
+        return InvalidStateError("An observation session is already active.")
+    # The controlled browser could not be opened or cleaned up: never claim
+    # observation is live when it is not.
+    return ServiceUnavailableError("browser observation")
+
+
 @router.post("/start", response_model=TeachSessionResponse)
 def start_teach_session(
     body: TeachStartRequest,
@@ -47,12 +70,12 @@ def start_teach_session(
 
     session_id = uuid.uuid4().hex[:12]
 
-    # Delegate observation to U1
+    # Delegate observation to U1. Consent was confirmed by the caller, so the
+    # observer may open its controlled browser at the requested page.
     try:
-        observer.start(session_id)
-    except NotImplementedError:
-        # U1 stub — session is registered but observation is not yet live.
-        pass
+        observer.start(session_id, consent=True, url=body.target_url)
+    except ObserverError as exc:
+        raise _observation_unavailable(exc) from exc
 
     _sessions[session_id] = {
         "state": AgentState.LEARNING,
@@ -82,11 +105,11 @@ def stop_teach_session(
     if session["stopped"]:
         raise InvalidStateError(f"Session '{session_id}' is already stopped.")
 
-    # Delegate stop to U1
+    # Delegate stop to U1 — seals the trace and releases the browser.
     try:
         observer.stop(session_id)
-    except NotImplementedError:
-        pass
+    except ObserverError as exc:
+        raise _observation_unavailable(exc) from exc
 
     session["stopped"] = True
     session["state"] = AgentState.PROCESSING
@@ -95,32 +118,47 @@ def stop_teach_session(
     events: list[BrowserEvent] = []
     try:
         events = observer.events(session_id)
-    except NotImplementedError:
-        pass
+    except ObserverError as exc:
+        raise _observation_unavailable(exc) from exc
 
     # Optionally generate draft via U2
     generate = True if body is None else body.generate_draft
     draft: WorkflowDraft | None = None
+    draft_id: str | None = None
+    draft_note = " No draft generated (no usable events were observed)."
     if generate and events:
         try:
-            draft = learner.create_draft(events)
-            session["state"] = AgentState.AWAITING_APPROVAL
-        except NotImplementedError:
+            learned = learner.create_draft(events)
+        except WorkflowDraftError as exc:
+            # U2 refuses to invent a workflow from insufficient evidence.
+            detail = getattr(exc, "message", None) or str(exc)
             session["state"] = AgentState.PROCESSING
+            draft_note = f" No draft generated: {detail}"
+        else:
+            # Translate U2's proposal into U3/U4's executable vocabulary and
+            # stage it for explicit review. Staging is never approval.
+            draft = normalize_draft(learned, events)
+            staged = stage_draft(
+                name=draft.name,
+                description=draft.description,
+                trigger_phrases=list(draft.trigger_phrases),
+                steps=list(draft.steps),
+                uncertainty_notes=list(draft.uncertainty_notes),
+            )
+            draft_id = staged.id
+            session["state"] = AgentState.AWAITING_APPROVAL
+            draft_note = " Draft generated for review."
 
+    session["draft_id"] = draft_id
     state = AgentState(session["state"])
     return TeachSessionResponse(
         session_id=session_id,
         state=state,
-        message="Observation stopped."
-        + (
-            " Draft generated for review."
-            if draft
-            else " No draft generated (awaiting agent modules)."
-        ),
+        message="Observation stopped." + draft_note,
         event_count=len(events),
         events=events,
         draft=draft,
+        draft_id=draft_id,
     )
 
 
@@ -137,8 +175,8 @@ def get_session_events(
     events: list[BrowserEvent] = []
     try:
         events = observer.events(session_id)
-    except NotImplementedError:
-        pass
+    except ObserverError as exc:
+        raise _observation_unavailable(exc) from exc
 
     return TeachSessionResponse(
         session_id=session_id,
@@ -146,4 +184,5 @@ def get_session_events(
         message=f"{len(events)} event(s) captured.",
         event_count=len(events),
         events=events,
+        draft_id=session.get("draft_id"),
     )

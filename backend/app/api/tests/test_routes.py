@@ -33,10 +33,10 @@ def test_teach_session_lifecycle():
     assert no_consent.status_code == 400
     assert no_consent.json()["code"] == "consent_required"
 
-    # 2. Start session
+    # 2. Start session — a real controlled browser at a local page (no network)
     start_res = client.post(
         "/api/learning/start",
-        json={"target_url": "https://example.com/course", "consent_confirmed": True},
+        json={"target_url": "about:blank", "consent_confirmed": True},
     )
     assert start_res.status_code == 200
     session_id = start_res.json()["session_id"]
@@ -53,7 +53,16 @@ def test_teach_session_lifecycle():
         json={"generate_draft": True},
     )
     assert stop_res.status_code == 200
-    assert stop_res.json()["state"] == AgentState.PROCESSING
+    stopped = stop_res.json()
+    # An empty demonstration cannot always be learned from; both outcomes must
+    # be reported honestly, and any produced draft must be staged for review.
+    assert stopped["state"] in (AgentState.PROCESSING, AgentState.AWAITING_APPROVAL)
+    if stopped["state"] == AgentState.AWAITING_APPROVAL:
+        assert stopped["draft_id"]
+        assert stopped["draft"]["steps"]
+    else:
+        assert stopped["draft"] is None
+        assert stopped["draft_id"] is None
 
     # 5. Double stop should fail with 409
     double_stop = client.post(f"/api/learning/{session_id}/stop")

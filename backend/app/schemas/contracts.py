@@ -232,6 +232,9 @@ class TeachSessionResponse(BaseModel):
     event_count: int = 0
     events: list[BrowserEvent] = Field(default_factory=list)
     draft: WorkflowDraft | None = None
+    # Additive (coordinator integration change): the staged draft's id, so the
+    # review screen can approve/reject it via /api/workflows/{id}/approve.
+    draft_id: str | None = None
 
 
 class WorkflowResponse(BaseModel):
